@@ -4,14 +4,13 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 import yt_dlp
-from shazamio import Shazam
+from pyshazam import Shazam
 
 # ТОКЕНИ БОТИ ХУДРО ДАР ИН ҶО ГУЗОРЕД
 TOKEN = "8713206187:AAGqhRBIhYK7r4JUg-QMbr4E6BJ-Alzf0RU"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-shazam = Shazam()
 
 # Веб-сервер барои Render
 async def handle(request):
@@ -91,7 +90,7 @@ async def ask_for_voice(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await bot.send_message(user_id, LANGUAGES[lang]["ask_voice"])
 
-# Қабули овоз ва ёфтани он тавассути Shazam
+# Қабули овоз ва ёфтани он тавассути pyshazam
 @dp.message(lambda message: message.voice)
 async def process_voice(message: types.Message):
     user_id = message.from_user.id
@@ -107,16 +106,19 @@ async def process_voice(message: types.Message):
     await bot.download_file(file_path, voice_path)
     
     try:
-        # Шинохтани суруд
-        out = await shazam.recognize(voice_path)
+        # Истифодаи китобхонаи нав барои шинохтан
+        shazam = Shazam(voice_path)
+        recognize_generator = shazam.recognize()
+        out = next(recognize_generator, None)
         
-        if not out.get('track'):
+        if not out or not out[1].get('track'):
             await status_msg.edit_text("❌ Шазам сурудро нашинохт.")
             os.remove(voice_path)
             return
             
-        title = out['track']['title']
-        artist = out['track']['subtitle']
+        track_info = out[1]['track']
+        title = track_info['title']
+        artist = track_info['subtitle']
         
         await status_msg.edit_text(LANGUAGES[lang]["found"].format(title=title, artist=artist), parse_mode="Markdown")
         
