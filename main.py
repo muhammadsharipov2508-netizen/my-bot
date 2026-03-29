@@ -1,148 +1,131 @@
-import asyncio
 import os
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
-from aiogram.types import FSInputFile, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils import executor
+from aiohttp import web
 import yt_dlp
 
-# ⚠️ Токени боти худро дар ин ҷо гузоред
 TOKEN = "8713206187:AAGqhRBIhYK7r4JUg-QMbr4E6BJ-Alzf0RU"
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot)
+
+# Веб-сервер барои Render
+async def handle(request):
+    return web.Response(text="Бот фаъол аст! 🚀")
+
+app = web.Application()
+app.router.add_get('/', handle)
 
 user_data = {}
 
-LANG_TEXTS = {
+# Забонҳо
+LANGUAGES = {
     "ru": {
-        "welcome": "Привет! Выберите язык / Салом! Забонро интихоб кунед:",
-        "ask_url": "Отправьте ссылку на видео 🔗",
-        "choose_action": "Что вы хотите получить?",
-        "btn_video": "🎥 Видео",
-        "btn_voice": "🔊 Звук видео",
+        "welcome": "Выберите язык / Забонро интихоб кунед:",
+        "ask_url": "Отправьте ссылку на видео 📥",
         "loading": "⏳ Загрузка, подождите...",
-        "error": "❌ Произошла ошибка! Линк кор накард.",
-        "invalid_url": "⚠️ Пожалуйста, отправьте правильную ссылку!",
+        "error": "❌ Ошибка при загрузке!",
+        "choose": "Что вы хотите получить?",
+        "btn_video": "📹 Видео",
+        "btn_audio": "🎵 Звук"
     },
-    "en": {
-        "welcome": "Hello! Choose a language / Салом! Забонро интихоб кунед:",
-        "ask_url": "Send me a video link 🔗",
-        "choose_action": "What do you want to get?",
-        "btn_video": "🎥 Video",
-        "btn_voice": "🔊 Video Audio",
-        "loading": "⏳ Downloading, please wait...",
-        "error": "❌ An error occurred! Link failed.",
-        "invalid_url": "⚠️ Please send a valid link!",
-    },
-    "fa": {
-        "welcome": "سلام! زبان را انتخاب کنید / Салом! Забонро интихоб кунед:",
-        "ask_url": "لینک ویدیو را بفرستید 🔗",
-        "choose_action": "چه چیزی می‌خواهید دریافت کنید؟",
-        "btn_video": "🎥 ویدیو",
-        "btn_voice": "🔊 صدای ویدیو",
-        "loading": "⏳ در حال دانلود, لطفا صبر کنید...",
-        "error": "❌ خطایی رخ داد! لینک کار نکرد.",
-        "invalid_url": "⚠️ لطفا یک لینک معتبر بفرستید!",
-    },
+    "tj": {
+        "welcome": "Салом! Забонро интихоб кунед / Привет! Выберите язык:",
+        "ask_url": "Линки видеоро фиристед 📥",
+        "loading": "⏳ Боргирӣ шуда истодааст, каме сабр кунед...",
+        "error": "❌ Хатогӣ ҳангоми боргирӣ!",
+        "choose": "Шумо чиро гирифтан мехоҳед?",
+        "btn_video": "📹 Видео",
+        "btn_audio": "🎵 Садо"
+    }
 }
 
-@dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="Русский 🇷🇺", callback_data="lang_ru"))
-    builder.add(InlineKeyboardButton(text="English 🇬🇧", callback_data="lang_en"))
-    builder.add(InlineKeyboardButton(text="فارسی 🇮🇷", callback_data="lang_fa"))
-    await message.answer(LANG_TEXTS["en"]["welcome"], reply_markup=builder.as_markup())
+@dp.message_handler(commands=['start'])
+async def send_welcome(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("Русский 🇷🇺", callback_data="lang_ru"),
+        types.InlineKeyboardButton("Тоҷикӣ 🇹🇯", callback_data="lang_tj")
+    )
+    await message.reply(LANGUAGES["tj"]["welcome"], reply_markup=keyboard)
 
-@dp.callback_query(lambda c: c.data.startswith("lang_"))
-async def set_language(callback: types.CallbackQuery):
-    lang = callback.data.split("_")[1]
-    user_data[callback.from_user.id] = {"lang": lang}
-    await callback.message.edit_text(LANG_TEXTS[lang]["ask_url"])
-    await callback.answer()
+@dp.callback_query_handler(lambda c: c.data.startswith('lang_'))
+async def process_language(callback_query: types.CallbackQuery):
+    lang = callback_query.data.split('_')[1]
+    user_data[callback_query.from_user.id] = {"lang": lang}
+    await bot.answer_callback_query(callback_query.id)
+    await bot.send_message(callback_query.from_user.id, LANGUAGES[lang]["ask_url"])
 
-@dp.message()
-async def handle_url(message: types.Message):
+@dp.message_handler(lambda message: "http" in message.text)
+async def ask_action(message: types.Message):
     user_id = message.from_user.id
-    url = message.text
-    lang = user_data.get(user_id, {}).get("lang", "en")
+    lang = user_data.get(user_id, {}).get("lang", "tj")
+    
+    user_data[user_id] = {"lang": lang, "url": message.text}
+    
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_video"], callback_data="get_video"),
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_audio"], callback_data="get_audio")
+    )
+    await message.reply(LANGUAGES[lang]["choose"], reply_markup=keyboard)
 
-    if not url.startswith(("http://", "https://")):
-        await message.answer(LANG_TEXTS[lang]["invalid_url"])
+@dp.callback_query_handler(lambda c: c.data in ["get_video", "get_audio"])
+async def process_download(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = user_data.get(user_id, {})
+    lang = data.get("lang", "tj")
+    url = data.get("url")
+    
+    if not url:
         return
-
-    user_data[user_id] = {"lang": lang, "url": url}
-
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text=LANG_TEXTS[lang]["btn_video"], callback_data="act_video"))
-    builder.add(InlineKeyboardButton(text=LANG_TEXTS[lang]["btn_voice"], callback_data="act_voice"))
-
-    await message.answer(LANG_TEXTS[lang]["choose_action"], reply_markup=builder.as_markup())
-
-@dp.callback_query(lambda c: c.data.startswith("act_"))
-async def process_action(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    action = callback.data.split("_")[1]
-
-    if user_id not in user_data or "url" not in user_data[user_id]:
-        await callback.answer()
-        return
-
-    lang = user_data[user_id]["lang"]
-    url = user_data[user_id]["url"]
-
-    msg = await callback.message.edit_text(LANG_TEXTS[lang]["loading"])
-    file_template = f"file_{callback.message.message_id}.%(ext)s"
-    filename = None
-
-    # Танзимоти махсус барои фиреб додани Инстаграм
-    base_opts = {
-        "outtmpl": file_template,
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {"instagram": {"ig_sig_key_version": [None]}}
+        
+    await bot.answer_callback_query(callback_query.id)
+    status_msg = await bot.send_message(user_id, LANGUAGES[lang]["loading"])
+    
+    action = callback_query.data
+    
+    # Танзимоти махсус барои Ютуб ва Инстаграм
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
     }
-
+    
+    if action == "get_video":
+        ydl_opts['format'] = 'best[ext=mp4]/best'
+        ydl_opts['outtmpl'] = f'video_{user_id}.mp4'
+    else:
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['outtmpl'] = f'audio_{user_id}.mp3'
+        
     try:
-        if action == "act_voice":
-            base_opts["format"] = "bestaudio/best"
-            chat_action = "upload_voice"
-        else:
-            base_opts["format"] = "best[ext=mp4]/best"
-            chat_action = "upload_video"
-
-        with yt_dlp.YoutubeDL(base_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-
-        if filename and os.path.exists(filename):
-            await bot.send_chat_action(callback.message.chat.id, chat_action)
-            file_to_send = FSInputFile(filename)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
             
-            if action == "act_voice":
-                await callback.message.answer_audio(audio=file_to_send)
-            else:
-                await callback.message.answer_video(video=file_to_send)
-                
-            await msg.delete()
+        if action == "get_video":
+            with open(f'video_{user_id}.mp4', 'rb') as f:
+                await bot.send_video(user_id, f)
+            os.remove(f'video_{user_id}.mp4')
         else:
-            await msg.edit_text(LANG_TEXTS[lang]["error"])
-
+            with open(f'audio_{user_id}.mp3', 'rb') as f:
+                await bot.send_audio(user_id, f)
+            os.remove(f'audio_{user_id}.mp3')
+            
+        await status_msg.delete()
+        
     except Exception as e:
-        print(f"Хатогӣ: {e}")
-        await msg.edit_text(LANG_TEXTS[lang]["error"])
-    finally:
-        if filename and os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except:
-                pass
-    await callback.answer()
+        await status_msg.edit_text(LANGUAGES[lang]["error"])
+        # Тоза кардани файлҳо дар сурати хатогӣ
+        for ext in ['mp4', 'mp3']:
+            file_path = f'{action.split("_")[1]}_{user_id}.{ext}'
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-  
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    from threading import Thread
+    def run_web():
+        web.run_app(app, host='0.0.0.0', port=port)
+        
+    Thread(target=run_web).start()
+    executor.start_polling(dp, skip_updates=True)
