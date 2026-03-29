@@ -1,13 +1,14 @@
 import os
+import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.filters import Command
 from aiohttp import web
 import yt_dlp
 
 TOKEN = "8713206187:AAGqhRBIhYK7r4JUg-QMbr4E6BJ-Alzf0RU"
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
 # Веб-сервер барои Render
 async def handle(request):
@@ -18,7 +19,6 @@ app.router.add_get('/', handle)
 
 user_data = {}
 
-# Забонҳо
 LANGUAGES = {
     "ru": {
         "welcome": "Выберите язык / Забонро интихоб кунед:",
@@ -40,37 +40,39 @@ LANGUAGES = {
     }
 }
 
-@dp.message_handler(commands=['start'])
+@dp.message(Command("start"))
 async def send_welcome(message: types.Message):
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton("Русский 🇷🇺", callback_data="lang_ru"),
-        types.InlineKeyboardButton("Тоҷикӣ 🇹🇯", callback_data="lang_tj")
-    )
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="Русский 🇷🇺", callback_data="lang_ru"),
+            types.InlineKeyboardButton(text="Тоҷикӣ 🇹🇯", callback_data="lang_tj")
+        ]
+    ])
     await message.reply(LANGUAGES["tj"]["welcome"], reply_markup=keyboard)
 
-@dp.callback_query_handler(lambda c: c.data.startswith('lang_'))
+@dp.callback_query(lambda c: c.data.startswith('lang_'))
 async def process_language(callback_query: types.CallbackQuery):
     lang = callback_query.data.split('_')[1]
     user_data[callback_query.from_user.id] = {"lang": lang}
-    await bot.answer_callback_query(callback_query.id)
+    await callback_query.answer()
     await bot.send_message(callback_query.from_user.id, LANGUAGES[lang]["ask_url"])
 
-@dp.message_handler(lambda message: "http" in message.text)
+@dp.message(lambda message: "http" in message.text)
 async def ask_action(message: types.Message):
     user_id = message.from_user.id
     lang = user_data.get(user_id, {}).get("lang", "tj")
     
     user_data[user_id] = {"lang": lang, "url": message.text}
     
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton(LANGUAGES[lang]["btn_video"], callback_data="get_video"),
-        types.InlineKeyboardButton(LANGUAGES[lang]["btn_audio"], callback_data="get_audio")
-    )
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text=LANGUAGES[lang]["btn_video"], callback_data="get_video"),
+            types.InlineKeyboardButton(text=LANGUAGES[lang]["btn_audio"], callback_data="get_audio")
+        ]
+    ])
     await message.reply(LANGUAGES[lang]["choose"], reply_markup=keyboard)
 
-@dp.callback_query_handler(lambda c: c.data in ["get_video", "get_audio"])
+@dp.callback_query(lambda c: c.data in ["get_video", "get_audio"])
 async def process_download(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     data = user_data.get(user_id, {})
@@ -80,16 +82,11 @@ async def process_download(callback_query: types.CallbackQuery):
     if not url:
         return
         
-    await bot.answer_callback_query(callback_query.id)
+    await callback_query.answer()
     status_msg = await bot.send_message(user_id, LANGUAGES[lang]["loading"])
     
     action = callback_query.data
-    
-    # Танзимоти махсус барои Ютуб ва Инстаграм
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-    }
+    ydl_opts = {'quiet': True, 'no_warnings': True}
     
     if action == "get_video":
         ydl_opts['format'] = 'best[ext=mp4]/best'
@@ -100,32 +97,34 @@ async def process_download(callback_query: types.CallbackQuery):
         
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            await asyncio.to_thread(ydl.download, [url])
             
         if action == "get_video":
-            with open(f'video_{user_id}.mp4', 'rb') as f:
-                await bot.send_video(user_id, f)
+            video_file = types.FSInputFile(f'video_{user_id}.mp4')
+            await bot.send_video(user_id, video_file)
             os.remove(f'video_{user_id}.mp4')
         else:
-            with open(f'audio_{user_id}.mp3', 'rb') as f:
-                await bot.send_audio(user_id, f)
+            audio_file = types.FSInputFile(f'audio_{user_id}.mp3')
+            await bot.send_audio(user_id, audio_file)
             os.remove(f'audio_{user_id}.mp3')
             
-        await status_msg.delete()
+        await bot.delete_message(user_id, status_msg.message_id)
         
     except Exception as e:
-        await status_msg.edit_text(LANGUAGES[lang]["error"])
-        # Тоза кардани файлҳо дар сурати хатогӣ
+        await bot.edit_message_text(LANGUAGES[lang]["error"], user_id, status_msg.message_id)
         for ext in ['mp4', 'mp3']:
             file_path = f'{action.split("_")[1]}_{user_id}.{ext}'
             if os.path.exists(file_path):
                 os.remove(file_path)
 
-if __name__ == '__main__':
+async def main():
     port = int(os.environ.get("PORT", 10000))
-    from threading import Thread
-    def run_web():
-        web.run_app(app, host='0.0.0.0', port=port)
-        
-    Thread(target=run_web).start()
-    executor.start_polling(dp, skip_updates=True)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
