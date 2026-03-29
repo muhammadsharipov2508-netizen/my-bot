@@ -1,155 +1,202 @@
 import os
 import asyncio
-import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 import yt_dlp
+from shazamio import Shazam
 
+# ТОКЕНИ БОТИ ХУДРО ДАР ИН ҶО ГУЗОРЕД
 TOKEN = "8713206187:AAGqhRBIhYK7r4JUg-QMbr4E6BJ-Alzf0RU"
-AUDD_API = "f764d26d4143e8cb0affca6f6f91e96a"  # ← аз audd.io гир
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+shazam = Shazam()
 
-# ========= WEB SERVER =========
+# Веб-сервер барои Render
 async def handle(request):
-    return web.Response(text="Bot is running 🚀")
+    return web.Response(text="Бот фаъол аст! 🚀")
 
 app = web.Application()
 app.router.add_get('/', handle)
 
-# ========= MEMORY =========
 user_data = {}
 
-# ========= LANG =========
-LANG = {
+LANGUAGES = {
+    "ru": {
+        "welcome": "Выберите язык / Забонро интихоб кунед:",
+        "ask_url": "Отправьте ссылку на видео 📥",
+        "loading": "⏳ Загрузка, подождите...",
+        "error": "❌ Ошибка!",
+        "choose": "Что вы хотите сделать?",
+        "btn_video": "📹 Видео",
+        "btn_audio": "🎵 Звук",
+        "btn_shazam": "🔍 Найти песню (Shazam)",
+        "ask_voice": "Отправьте голосовое сообщение (Голос) с песней 🎤",
+        "found": "🎶 Найдена песня: **{title}**\n👤 Исполнитель: {artist}\n\n⏳ Ищу саму песню в YouTube..."
+    },
     "tj": {
-        "welcome": "Салом! Забонро интихоб кунед:",
-        "ask": "Линк фиристед 📥",
-        "choose": "Чиро мехоҳед?",
-        "video": "📹 Видео",
-        "audio": "🎵 Садо",
-        "find": "🎧 Ёфтани мусиқӣ",
-        "loading": "⏳ Интизор шавед...",
-        "error": "❌ Хатогӣ!",
-        "not_found": "❌ Мусиқӣ ёфт нашуд"
+        "welcome": "Салом! Забонро интихоб кунед / Привет! Выберите язык:",
+        "ask_url": "Линки видеоро фиристед 📥",
+        "loading": "⏳ Боргирӣ шуда истодааст, каме сабр кунед...",
+        "error": "❌ Хатогӣ рӯй дод!",
+        "choose": "Шумо чиро гирифтан мехоҳед?",
+        "btn_video": "📹 Видео",
+        "btn_audio": "🎵 Садо",
+        "btn_shazam": "🔍 Ёфтани суруд (Shazam)",
+        "ask_voice": "Паёми овозӣ (Голос)-ро бо суруд фиристед 🎤",
+        "found": "🎶 Суруд ёфт шуд: **{title}**\n👤 Овозхон: {artist}\n\n⏳ Худи мусиқиро аз YouTube кофта истодаам..."
     }
 }
 
-# ========= START =========
 @dp.message(Command("start"))
-async def start(msg: types.Message):
-    user_data[msg.from_user.id] = {"lang": "tj"}
-    await msg.answer(LANG["tj"]["ask"])
-
-# ========= URL =========
-@dp.message(lambda m: m.text and "http" in m.text)
-async def get_url(msg: types.Message):
-    uid = msg.from_user.id
-    user_data[uid]["url"] = msg.text
-
-    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+async def send_welcome(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [
-            types.InlineKeyboardButton(text=LANG["tj"]["video"], callback_data="video"),
-            types.InlineKeyboardButton(text=LANG["tj"]["audio"], callback_data="audio")
-        ],
-        [
-            types.InlineKeyboardButton(text=LANG["tj"]["find"], callback_data="find")
+            types.InlineKeyboardButton(text="Русский 🇷🇺", callback_data="lang_ru"),
+            types.InlineKeyboardButton(text="Тоҷикӣ 🇹🇯", callback_data="lang_tj")
         ]
     ])
+    await message.reply(LANGUAGES["tj"]["welcome"], reply_markup=keyboard)
 
-    await msg.answer(LANG["tj"]["choose"], reply_markup=kb)
+@dp.callback_query(lambda c: c.data.startswith('lang_'))
+async def process_language(callback_query: types.CallbackQuery):
+    lang = callback_query.data.split('_')[1]
+    user_data[callback_query.from_user.id] = {"lang": lang}
+    await callback_query.answer()
+    await bot.send_message(callback_query.from_user.id, LANGUAGES[lang]["ask_url"])
 
-# ========= DOWNLOAD =========
-async def download_media(url, filename, fmt):
-    ydl_opts = {
-        'format': fmt,
-        'outtmpl': filename,
-        'quiet': True
-    }
+@dp.message(lambda message: message.text and "http" in message.text)
+async def ask_action(message: types.Message):
+    user_id = message.from_user.id
+    lang = user_data.get(user_id, {}).get("lang", "tj")
+    
+    user_data[user_id] = {"lang": lang, "url": message.text}
+    
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text=LANGUAGES[lang]["btn_video"], callback_data="get_video"),
+            types.InlineKeyboardButton(text=LANGUAGES[lang]["btn_audio"], callback_data="get_audio")
+        ],
+        [
+            types.InlineKeyboardButton(text=LANGUAGES[lang]["btn_shazam"], callback_data="get_shazam")
+        ]
+    ])
+    await message.reply(LANGUAGES[lang]["choose"], reply_markup=keyboard)
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        await asyncio.to_thread(ydl.download, [url])
+@dp.callback_query(lambda c: c.data == "get_shazam")
+async def ask_for_voice(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    lang = user_data.get(user_id, {}).get("lang", "tj")
+    await callback_query.answer()
+    await bot.send_message(user_id, LANGUAGES[lang]["ask_voice"])
 
-# ========= VIDEO / AUDIO =========
-@dp.callback_query(lambda c: c.data in ["video", "audio"])
-async def handle_download(call: types.CallbackQuery):
-    uid = call.from_user.id
-    url = user_data.get(uid, {}).get("url")
-
-    if not url:
-        return
-
-    await call.answer()
-    msg = await bot.send_message(uid, LANG["tj"]["loading"])
-
+# Қабули овоз ва ёфтани он тавассути Shazam
+@dp.message(lambda message: message.voice)
+async def process_voice(message: types.Message):
+    user_id = message.from_user.id
+    lang = user_data.get(user_id, {}).get("lang", "tj")
+    
+    status_msg = await message.reply(LANGUAGES[lang]["loading"])
+    
+    file_id = message.voice.file_id
+    file = await bot.get_file(file_id)
+    file_path = file.file_path
+    
+    voice_path = f"voice_{user_id}.ogg"
+    await bot.download_file(file_path, voice_path)
+    
     try:
-        if call.data == "video":
-            file = f"video_{uid}.mp4"
-            await download_media(url, file, "best[ext=mp4]/best")
-            await bot.send_video(uid, types.FSInputFile(file))
-
-        else:
-            file = f"audio_{uid}.mp3"
-            await download_media(url, file, "bestaudio/best")
-            await bot.send_audio(uid, types.FSInputFile(file))
-
-        os.remove(file)
-        await bot.delete_message(uid, msg.message_id)
-
-    except:
-        await bot.edit_message_text(LANG["tj"]["error"], uid, msg.message_id)
-
-# ========= FIND MUSIC =========
-@dp.callback_query(lambda c: c.data == "find")
-async def find_music(call: types.CallbackQuery):
-    uid = call.from_user.id
-    url = user_data.get(uid, {}).get("url")
-
-    await call.answer()
-    msg = await bot.send_message(uid, "🎧 Ҷустуҷӯ...")
-
-    try:
-        file = f"music_{uid}.mp3"
-
-        # download audio
-        await download_media(url, file, "bestaudio/best")
-
-        # send to AudD
-        with open(file, 'rb') as f:
-            r = requests.post(
-                "https://api.audd.io/",
-                data={"api_token": AUDD_API},
-                files={"file": f}
-            )
-
-        data = r.json()
-
-        if data.get("result"):
-            title = data["result"]["title"]
-            artist = data["result"]["artist"]
-
-            await bot.send_message(uid, f"🎵 {title}\n👤 {artist}")
-        else:
-            await bot.send_message(uid, LANG["tj"]["not_found"])
-
-        os.remove(file)
-        await bot.delete_message(uid, msg.message_id)
-
+        # Шинохтани суруд
+        out = await shazam.recognize(voice_path)
+        
+        if not out.get('track'):
+            await status_msg.edit_text("❌ Шазам сурудро нашинохт.")
+            os.remove(voice_path)
+            return
+            
+        title = out['track']['title']
+        artist = out['track']['subtitle']
+        
+        await status_msg.edit_text(LANGUAGES[lang]["found"].format(title=title, artist=artist), parse_mode="Markdown")
+        
+        # Ҷустуҷӯ ва боргирии худи мусиқӣ аз Ютуб
+        search_query = f"ytsearch:{artist} {title}"
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'song_{user_id}.mp3',
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            await asyncio.to_thread(ydl.download, [search_query])
+            
+        # Фиристодани файл
+        audio_file = types.FSInputFile(f'song_{user_id}.mp3')
+        await bot.send_audio(user_id, audio_file, title=title, performer=artist)
+        
+        # Тоза кардани файлҳо
+        os.remove(voice_path)
+        os.remove(f'song_{user_id}.mp3')
+        await bot.delete_message(user_id, status_msg.message_id)
+        
     except Exception as e:
-        await bot.send_message(uid, LANG["tj"]["error"])
+        await bot.edit_message_text(LANGUAGES[lang]["error"], user_id, status_msg.message_id)
+        if os.path.exists(voice_path): os.remove(voice_path)
+        if os.path.exists(f'song_{user_id}.mp3'): os.remove(f'song_{user_id}.mp3')
 
-# ========= RUN =========
+# Боргирии оддии видеову аудио
+@dp.callback_query(lambda c: c.data in ["get_video", "get_audio"])
+async def process_download(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = user_data.get(user_id, {})
+    lang = data.get("lang", "tj")
+    url = data.get("url")
+    
+    if not url: return
+        
+    await callback_query.answer()
+    status_msg = await bot.send_message(user_id, LANGUAGES[lang]["loading"])
+    
+    action = callback_query.data
+    ydl_opts = {'quiet': True, 'no_warnings': True}
+    
+    if action == "get_video":
+        ydl_opts['format'] = 'best[ext=mp4]/best'
+        ydl_opts['outtmpl'] = f'video_{user_id}.mp4'
+    else:
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['outtmpl'] = f'audio_{user_id}.mp3'
+        
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            await asyncio.to_thread(ydl.download, [url])
+            
+        if action == "get_video":
+            video_file = types.FSInputFile(f'video_{user_id}.mp4')
+            await bot.send_video(user_id, video_file)
+            os.remove(f'video_{user_id}.mp4')
+        else:
+            audio_file = types.FSInputFile(f'audio_{user_id}.mp3')
+            await bot.send_audio(user_id, audio_file)
+            os.remove(f'audio_{user_id}.mp3')
+            
+        await bot.delete_message(user_id, status_msg.message_id)
+        
+    except Exception as e:
+        await bot.edit_message_text(LANGUAGES[lang]["error"], user_id, status_msg.message_id)
+        for ext in ['mp4', 'mp3']:
+            file_path = f'{action.split("_")[1]}_{user_id}.{ext}'
+            if os.path.exists(file_path): os.remove(file_path)
+
 async def main():
     port = int(os.environ.get("PORT", 10000))
-
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
