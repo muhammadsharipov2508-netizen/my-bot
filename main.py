@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web
 import yt_dlp
-from pyshazam import Shazam
+import aiohttp
 
 # ТОКЕНИ БОТИ ХУДРО ДАР ИН ҶО ГУЗОРЕД
 TOKEN = "8713206187:AAGqhRBIhYK7r4JUg-QMbr4E6BJ-Alzf0RU"
@@ -30,7 +30,7 @@ LANGUAGES = {
         "choose": "Что вы хотите сделать?",
         "btn_video": "📹 Видео",
         "btn_audio": "🎵 Звук",
-        "btn_shazam": "🔍 Найти песню (Shazam)",
+        "btn_shazam": "🔍 Найти песню",
         "ask_voice": "Отправьте голосовое сообщение (Голос) с песней 🎤",
         "found": "🎶 Найдена песня: **{title}**\n👤 Исполнитель: {artist}\n\n⏳ Ищу саму песню в YouTube..."
     },
@@ -42,7 +42,7 @@ LANGUAGES = {
         "choose": "Шумо чиро гирифтан мехоҳед?",
         "btn_video": "📹 Видео",
         "btn_audio": "🎵 Садо",
-        "btn_shazam": "🔍 Ёфтани суруд (Shazam)",
+        "btn_shazam": "🔍 Ёфтани суруд",
         "ask_voice": "Паёми овозӣ (Голос)-ро бо суруд фиристед 🎤",
         "found": "🎶 Суруд ёфт шуд: **{title}**\n👤 Овозхон: {artist}\n\n⏳ Худи мусиқиро аз YouTube кофта истодаам..."
     }
@@ -90,7 +90,7 @@ async def ask_for_voice(callback_query: types.CallbackQuery):
     await callback_query.answer()
     await bot.send_message(user_id, LANGUAGES[lang]["ask_voice"])
 
-# Қабули овоз ва ёфтани он тавассути pyshazam
+# Шинохтани овоз тавассути API-и ройгони беруна
 @dp.message(lambda message: message.voice)
 async def process_voice(message: types.Message):
     user_id = message.from_user.id
@@ -102,27 +102,26 @@ async def process_voice(message: types.Message):
     file = await bot.get_file(file_id)
     file_path = file.file_path
     
-    voice_path = f"voice_{user_id}.ogg"
-    await bot.download_file(file_path, voice_path)
+    # Ссылкаи файли овоз аз Телеграм
+    voice_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
     
     try:
-        # Истифодаи китобхонаи нав барои шинохтан
-        shazam = Shazam(voice_path)
-        recognize_generator = shazam.recognize()
-        out = next(recognize_generator, None)
-        
-        if not out or not out[1].get('track'):
-            await status_msg.edit_text("❌ Шазам сурудро нашинохт.")
-            os.remove(voice_path)
+        # Истифодаи API-и кушодаи шинохт
+        async with aiohttp.ClientSession() as session:
+            api_url = f"https://api.shazam.io/recognize?url={voice_url}"
+            async with session.get(api_url) as resp:
+                result = await resp.json()
+                
+        if not result.get('track'):
+            await status_msg.edit_text("❌ Сурудро шинохта натавонистам.")
             return
             
-        track_info = out[1]['track']
-        title = track_info['title']
-        artist = track_info['subtitle']
+        title = result['track']['title']
+        artist = result['track']['subtitle']
         
         await status_msg.edit_text(LANGUAGES[lang]["found"].format(title=title, artist=artist), parse_mode="Markdown")
         
-        # Ҷустуҷӯ ва боргирии худи мусиқӣ аз Ютуб
+        # Боргирии мусиқӣ аз Ютуб
         search_query = f"ytsearch:{artist} {title}"
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -134,18 +133,14 @@ async def process_voice(message: types.Message):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             await asyncio.to_thread(ydl.download, [search_query])
             
-        # Фиристодани файл
         audio_file = types.FSInputFile(f'song_{user_id}.mp3')
         await bot.send_audio(user_id, audio_file, title=title, performer=artist)
         
-        # Тоза кардани файлҳо
-        os.remove(voice_path)
         os.remove(f'song_{user_id}.mp3')
         await bot.delete_message(user_id, status_msg.message_id)
         
     except Exception as e:
         await bot.edit_message_text(LANGUAGES[lang]["error"], user_id, status_msg.message_id)
-        if os.path.exists(voice_path): os.remove(voice_path)
         if os.path.exists(f'song_{user_id}.mp3'): os.remove(f'song_{user_id}.mp3')
 
 # Боргирии оддии видеову аудио
